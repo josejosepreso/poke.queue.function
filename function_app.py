@@ -8,6 +8,7 @@ import requests
 from dotenv import load_dotenv
 import pandas as pd
 from azure.storage.blob import BlobServiceClient
+import random
 
 app = func.FunctionApp()
 load_dotenv()
@@ -29,14 +30,16 @@ def QueueTriggerPokeReport(azqueue: func.QueueMessage):
     body = azqueue.get_body().decode('utf-8')
     record = json.loads(body)[0]
 
-    if "action" not in record:
+    action = record.get("action")
+
+    if action is None:
         return
 
     id = record["id"]
 
-    if record["action"] == "insert":
+    if action == "insert":
         return create_report( id )
-    if record["action"] == "delete":
+    if action == "delete":
         return delete_blob(f"poke_report_{ id }.csv")
 
 def delete_blob( blob_name: str ):
@@ -51,7 +54,7 @@ def delete_blob( blob_name: str ):
 def create_report( id: int ):
     update_request( id , "inprogress" )
     request_info = get_request(id)
-    pokemons = get_pokemons( request_info[0]["type"] )
+    pokemons = get_pokemons( request_info[0]["type"], request_info[0].get("sample_size") )
     pokemon_bytes = generate_csv_to_blob( pokemons )
     blob_name = f"poke_report_{id}.csv"
     upload_csv_to_blob( blob_name=blob_name, csv_data=pokemon_bytes )
@@ -75,12 +78,25 @@ def get_request(id: int) -> dict:
     reponse = requests.get( f"{DOMAIN}/api/request/{id}"  )
     return reponse.json()
 
-def get_pokemons( type: str ) -> dict:
+def parse_int(n: str) -> int:
+    try:
+        return int(n)
+    except Exception as e:
+        return None
+
+def get_pokemons( type: str, sample_size: str) -> dict:
     pokeapi_url = f"https://pokeapi.co/api/v2/type/{type}"
     response = requests.get(pokeapi_url, timeout=3000)
     data = response.json()
-    pokemon_entries = data.get("pokemon", [] )
-    return [ p["pokemon"] for p in pokemon_entries ]
+    pokemon_entries = data.get("pokemon", [])
+
+    pokemons = [ { **p["pokemon"], **get_pokemon_data(p["pokemon"].get("url")) } for p in pokemon_entries ]
+
+    n = parse_int(sample_size)
+
+    if n is not None and n <= len(pokemons):
+        return random.sample(pokemons, n)
+    return pokemons
 
 def generate_csv_to_blob( pokemon_list: list ) -> bytes:
     df = pd.DataFrame( pokemon_list )
@@ -98,3 +114,22 @@ def upload_csv_to_blob( blob_name: str, csv_data: bytes ):
     except Exception as e:
         logger.error(f"Error al subir el archivo {e} ")
         raise
+
+def get_pokemon_data( url: str ) -> dict:
+    if not url:
+        return None
+    
+    res = requests.get(url , timeout=3000)
+    
+    if res.status_code is not requests.codes.ok:
+        return None
+    
+    data = res.json()
+    
+    stats = data.get("stats", [])
+    abilities = data.get("abilities", [])
+    
+    base_stats = { s["stat"]["name"]: s["base_stat"] for s in stats }
+    abilities_list = ",".join([ a["ability"]["name"] for a in abilities ])
+    
+    return { **base_stats, "abilities": f"{ abilities_list }" }
