@@ -84,19 +84,17 @@ def parse_int(n: str) -> int:
     except Exception as e:
         return None
 
-def get_pokemons( type: str, sample_size: str) -> dict:
+def get_pokemons( type: str, sample_size: str) -> list:
     pokeapi_url = f"https://pokeapi.co/api/v2/type/{type}"
     response = requests.get(pokeapi_url, timeout=3000)
     data = response.json()
     pokemon_entries = data.get("pokemon", [])
 
-    pokemons = [ { **p["pokemon"], **get_pokemon_data(p["pokemon"].get("url")) } for p in pokemon_entries ]
-
     n = parse_int(sample_size)
+    if n is not None and n <= len(pokemon_entries):
+        pokemon_entries = random.sample(pokemon_entries, n)
 
-    if n is not None and n <= len(pokemons):
-        return random.sample(pokemons, n)
-    return pokemons
+    return [ { **p["pokemon"], **get_pokemon_data(p["pokemon"].get("url")) } for p in pokemon_entries ]
 
 def generate_csv_to_blob( pokemon_list: list ) -> bytes:
     df = pd.DataFrame( pokemon_list )
@@ -116,20 +114,10 @@ def upload_csv_to_blob( blob_name: str, csv_data: bytes ):
         raise
 
 def get_pokemon_data( url: str ) -> dict:
-    if not url:
-        return None
-    
     res = requests.get(url , timeout=3000)
-    
-    if res.status_code is not requests.codes.ok:
-        return None
-    
     data = res.json()
     
-    stats = data.get("stats", [])
-    abilities = data.get("abilities", [])
+    base_stats = { s["stat"]["name"]: s["base_stat"] for s in data.get("stats", []) }
+    abilities = ",".join([ a["ability"]["name"] for a in data.get("abilities", []) ])
     
-    base_stats = { s["stat"]["name"]: s["base_stat"] for s in stats }
-    abilities_list = ",".join([ a["ability"]["name"] for a in abilities ])
-    
-    return { **base_stats, "abilities": f"{ abilities_list }" }
+    return { **base_stats, "abilities": f"{ abilities }" }
